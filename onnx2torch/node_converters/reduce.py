@@ -167,6 +167,7 @@ class OnnxReduceStaticAxes(nn.Module, OnnxToTorchModule):
         operation_type: str,
         axes: Optional[List[int]],
         keepdims: int = 1,
+        noop_with_empty_axes: int = 0,
     ):
         super().__init__()
         self.operation_type = operation_type
@@ -177,9 +178,12 @@ class OnnxReduceStaticAxes(nn.Module, OnnxToTorchModule):
 
         self.keepdims = keepdims == 1
         self.axes = axes
+        self.noop_with_empty_axes = noop_with_empty_axes
 
     def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:  # pylint: disable=missing-function-docstring
         if self.axes is None or len(self.axes) == 0:
+            if self.noop_with_empty_axes:
+                return input_tensor
             if not self.keepdims:
                 return self.math_op_function(input_tensor)
 
@@ -190,6 +194,46 @@ class OnnxReduceStaticAxes(nn.Module, OnnxToTorchModule):
 
         result = input_tensor
         for passed_dims, axis in enumerate(self.axes):
+            result = self.math_op_function(
+                result,
+                dim=axis if self.keepdims else axis - passed_dims,
+                keepdim=self.keepdims,
+            )
+            result = _get_element(result, 0)
+
+        return result
+
+class OnnxReduceStaticAxesV18(nn.Module, OnnxToTorchModule):
+    def __init__(
+        self,
+        operation_type: str,
+        
+        keepdims: int = 1,
+        noop_with_empty_axes: int = 0,
+    ):
+        super().__init__()
+        self.operation_type = operation_type
+        self.math_op_function = _TORCH_FUNCTION_FROM_ONNX_TYPE[operation_type]
+        self.keepdims = keepdims == 1
+        self.noop_with_empty_axes = noop_with_empty_axes
+
+    def forward(self, input_tensor: torch.Tensor, axes: Optional[List[int]],) -> torch.Tensor:  # pylint: disable=missing-function-docstring
+        if axes is not None:
+            axes = sorted(axes)
+
+        if axes is None or len(axes) == 0:
+            if self.noop_with_empty_axes:
+                return input_tensor
+            if not self.keepdims:
+                return self.math_op_function(input_tensor)
+
+            axes = list(range(input_tensor.dim()))
+
+        if self.operation_type not in ['ReduceMax', 'ReduceMin', 'ReduceProd']:
+            return self.math_op_function(input_tensor, dim=axes, keepdim=self.keepdims)
+
+        result = input_tensor
+        for passed_dims, axis in enumerate(axes):
             result = self.math_op_function(
                 result,
                 dim=axis if self.keepdims else axis - passed_dims,
@@ -242,6 +286,23 @@ def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:
             operation_type=node.operation_type,
             axes=axes,
             keepdims=keepdims,
+        ),
+        onnx_mapping=onnx_mapping_from_node(node=node),
+    )
+    
+@add_converter(operation_type='ReduceMax', version=18)
+@add_converter(operation_type='ReduceMax', version=20)
+def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:
+    node_attributes = node.attributes
+    axes_name = node.input_values[1]
+    noop_with_empty_axes: int = node.attributes.get('noop_with_empty_axes', 0)
+    keepdims: int = node_attributes.get('keepdims', 1)
+
+    return OperationConverterResult(
+        torch_module=OnnxReduceStaticAxesV18(
+            operation_type=node.operation_type,
+            keepdims=keepdims,
+            noop_with_empty_axes=noop_with_empty_axes,
         ),
         onnx_mapping=onnx_mapping_from_node(node=node),
     )
