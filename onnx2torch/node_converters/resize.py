@@ -123,6 +123,8 @@ def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: 
 
 @add_converter(operation_type='Resize', version=11)
 @add_converter(operation_type='Resize', version=13)
+@add_converter(operation_type='Resize', version=18)
+@add_converter(operation_type='Resize', version=19)
 def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: disable=unused-argument
     node_attributes = node.attributes
     coordinate_transformation_mode = node_attributes.get('coordinate_transformation_mode', 'half_pixel')
