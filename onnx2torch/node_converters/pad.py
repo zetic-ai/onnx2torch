@@ -111,6 +111,60 @@ class OnnxPadDynamic(nn.Module, OnnxToTorchModule):  # pylint: disable=missing-c
 
         return F.pad(input_tensor, mode=self.mode, pad=torch_pads, value=constant_value)  # pylint: disable=not-callable
 
+class OnnxPadDynamicV18(nn.Module, OnnxToTorchModule):  # pylint: disable=missing-class-docstring
+    def __init__(self, mode: str = 'constant'):
+        super().__init__()
+        self.mode = mode
+
+    def forward(
+        self,
+        input_tensor: torch.Tensor,
+        pads: torch.Tensor,
+        constant_value: Optional[float] = 0.0,
+        axes: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        input_rank = input_tensor.dim()
+
+        # Determine target axes
+        if axes is None:
+            axes_list = list(range(input_rank))
+        else:
+            axes_list = axes.tolist()
+            axes_list = [(axis + input_rank) if axis < 0 else axis for axis in axes_list]
+
+        # Validate pads
+        pads_list = pads.tolist()
+        assert len(pads_list) == 2 * len(axes_list), \
+            f"Expected {2 * len(axes_list)} pad values, but got {len(pads_list)}"
+
+        # Initialize full pad list with zeros
+        full_pad = [0, 0] * input_rank  # Format: [pad_right, pad_left, ..., for each dim in reverse]
+
+        # Fill in pad values for the given axes
+        for i, axis in enumerate(axes_list):
+            pad_before = pads_list[i]
+            pad_after = pads_list[len(axes_list) + i]
+            full_pad[2 * (input_rank - 1 - axis)] = pad_before
+            full_pad[2 * (input_rank - 1 - axis) + 1] = pad_after
+
+        return F.pad(input_tensor, full_pad, mode=self.mode, value=constant_value)
+
+
+@add_converter(operation_type='Pad', version=18)
+@add_converter(operation_type='Pad', version=19)
+@add_converter(operation_type='Pad', version=23)
+@add_converter(operation_type='Pad', version=24)
+def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: disable=unused-argument
+    mode = node.attributes.get('mode', 'constant')
+    mode = _onnx_to_torch_mode(mode)
+
+    return OperationConverterResult(
+        torch_module=OnnxPadDynamicV18(mode=mode),
+        onnx_mapping=OnnxMapping(
+            inputs=node.input_values,
+            outputs=node.output_values,
+        ),
+    )
 
 @add_converter(operation_type='Pad', version=11)
 @add_converter(operation_type='Pad', version=13)
