@@ -290,6 +290,7 @@ def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:
         onnx_mapping=onnx_mapping_from_node(node=node),
     )
     
+@add_converter(operation_type='ReduceMean', version=18)
 @add_converter(operation_type='ReduceMax', version=18)
 @add_converter(operation_type='ReduceMax', version=20)
 def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:
