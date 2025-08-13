@@ -162,71 +162,21 @@ class OnnxReduceSumStaticAxes(nn.Module, OnnxToTorchModule):
 
 
 class OnnxReduceStaticAxes(nn.Module, OnnxToTorchModule):
-    def __init__(
-        self,
-        operation_type: str,
-        axes: Optional[List[int]],
-        keepdims: int = 1,
-        noop_with_empty_axes: int = 0,
-    ):
+    def __init__(self, operation_type: str, axes: Optional[List[int]], keepdims: int = 1, noop_with_empty_axes: int = 0):
         super().__init__()
         self.operation_type = operation_type
         self.math_op_function = _TORCH_FUNCTION_FROM_ONNX_TYPE[operation_type]
-
-        if axes is not None:
-            axes = sorted(axes)
-
-        self.keepdims = keepdims == 1
-        self.axes = axes
+        self.keepdims = (keepdims == 1)
         self.noop_with_empty_axes = noop_with_empty_axes
+        self._axes = None if axes is None else tuple(sorted(int(a) for a in axes))
 
-    def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:  # pylint: disable=missing-function-docstring
-        if self.axes is None or len(self.axes) == 0:
+    def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:
+        axes = list(self._axes) if self._axes is not None else []
+        if len(axes) == 0:
             if self.noop_with_empty_axes:
                 return input_tensor
             if not self.keepdims:
                 return self.math_op_function(input_tensor)
-
-            self.axes = list(range(input_tensor.dim()))
-
-        if self.operation_type not in ['ReduceMax', 'ReduceMin', 'ReduceProd']:
-            return self.math_op_function(input_tensor, dim=self.axes, keepdim=self.keepdims)
-
-        result = input_tensor
-        for passed_dims, axis in enumerate(self.axes):
-            result = self.math_op_function(
-                result,
-                dim=axis if self.keepdims else axis - passed_dims,
-                keepdim=self.keepdims,
-            )
-            result = _get_element(result, 0)
-
-        return result
-
-class OnnxReduceStaticAxesV18(nn.Module, OnnxToTorchModule):
-    def __init__(
-        self,
-        operation_type: str,
-        
-        keepdims: int = 1,
-        noop_with_empty_axes: int = 0,
-    ):
-        super().__init__()
-        self.operation_type = operation_type
-        self.math_op_function = _TORCH_FUNCTION_FROM_ONNX_TYPE[operation_type]
-        self.keepdims = keepdims == 1
-        self.noop_with_empty_axes = noop_with_empty_axes
-
-    def forward(self, input_tensor: torch.Tensor, axes: Optional[List[int]],) -> torch.Tensor:  # pylint: disable=missing-function-docstring
-        if axes is not None:
-            axes = sorted(axes)
-
-        if axes is None or len(axes) == 0:
-            if self.noop_with_empty_axes:
-                return input_tensor
-            if not self.keepdims:
-                return self.math_op_function(input_tensor)
-
             axes = list(range(input_tensor.dim()))
 
         if self.operation_type not in ['ReduceMax', 'ReduceMin', 'ReduceProd']:
@@ -240,9 +190,79 @@ class OnnxReduceStaticAxesV18(nn.Module, OnnxToTorchModule):
                 keepdim=self.keepdims,
             )
             result = _get_element(result, 0)
-
         return result
 
+
+class OnnxReduceStaticOrDynamicAxesV18(nn.Module, OnnxToTorchModuleWithCustomExport):
+    def __init__(
+        self,
+        operation_type: str,
+        keepdims: int = 1,
+        noop_with_empty_axes: int = 0,
+        baked_axes: Optional[List[int]] = None,
+    ):
+        super().__init__()
+        self.operation_type = operation_type
+        self.math_op_function = _TORCH_FUNCTION_FROM_ONNX_TYPE[operation_type]
+        self.keepdims = (keepdims == 1)
+        self.noop_with_empty_axes = noop_with_empty_axes
+        self._baked_axes = None if baked_axes is None else tuple(sorted(int(a) for a in baked_axes))
+
+    def _onnx_attrs(self, opset_version: int) -> Dict[str, Any]:
+        del opset_version
+        return {
+            'keepdims_i': int(self.keepdims),
+            'noop_with_empty_axes_i': int(self.noop_with_empty_axes),
+        }
+
+    def _reduce_impl(self, x: torch.Tensor, axes_list: List[int]) -> torch.Tensor:
+        if self.operation_type not in ['ReduceMax', 'ReduceMin', 'ReduceProd']:
+            return self.math_op_function(x, dim=axes_list, keepdim=self.keepdims)
+
+        result = x
+        for passed_dims, axis in enumerate(axes_list):
+            result = self.math_op_function(
+                result,
+                dim=axis if self.keepdims else axis - passed_dims,
+                keepdim=self.keepdims,
+            )
+            result = _get_element(result, 0)
+        return result
+
+    def forward(
+        self,
+        input_tensor: torch.Tensor,
+        axes: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if self._baked_axes is not None:
+            const_axes = list(self._baked_axes)
+            if len(const_axes) == 0:
+                if self.noop_with_empty_axes:
+                    return input_tensor
+                if not self.keepdims:
+                    return self.math_op_function(input_tensor)
+                const_axes = list(range(input_tensor.dim()))
+            return self._reduce_impl(input_tensor, const_axes)
+
+        def _eager_forward() -> torch.Tensor:
+            if axes is None or axes.nelement() == 0:
+                if self.noop_with_empty_axes:
+                    return input_tensor
+                if not self.keepdims:
+                    return self.math_op_function(input_tensor)
+                fixed_axes = list(range(input_tensor.dim()))
+            else:
+                fixed_axes = torch.sort(axes).values.tolist()
+            return self._reduce_impl(input_tensor, fixed_axes)
+
+        if torch.onnx.is_in_onnx_export():
+            args = [input_tensor]
+            if axes is not None:
+                args.append(axes)
+            onnx_attrs = self._onnx_attrs(opset_version=get_onnx_version())
+            return DefaultExportToOnnx.export(_eager_forward, self.operation_type, *args, onnx_attrs)
+
+        return _eager_forward()
 
 @add_converter(operation_type='ReduceL1', version=1)
 @add_converter(operation_type='ReduceL1', version=11)
@@ -294,20 +314,38 @@ def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:
 @add_converter(operation_type='ReduceMax', version=18)
 @add_converter(operation_type='ReduceMax', version=20)
 def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:
-    node_attributes = node.attributes
-    axes_name = node.input_values[1]
+    keepdims: int = node.attributes.get('keepdims', 1)
     noop_with_empty_axes: int = node.attributes.get('noop_with_empty_axes', 0)
-    keepdims: int = node_attributes.get('keepdims', 1)
+
+    baked_axes: Optional[List[int]] = None
+    if len(node.input_values) >= 2:
+        try:
+            const_axes = cast(torch.Tensor, get_const_value(node.input_values[1], graph))
+            baked_axes = [int(a) for a in const_axes.flatten().tolist()]
+            return OperationConverterResult(
+                torch_module=OnnxReduceStaticOrDynamicAxesV18(
+                    operation_type=node.operation_type,
+                    keepdims=keepdims,
+                    noop_with_empty_axes=noop_with_empty_axes,
+                    baked_axes=baked_axes,
+                ),
+                onnx_mapping=OnnxMapping(
+                    inputs=(node.input_values[0],),
+                    outputs=node.output_values,
+                ),
+            )
+        except KeyError:
+            pass
 
     return OperationConverterResult(
-        torch_module=OnnxReduceStaticAxesV18(
+        torch_module=OnnxReduceStaticOrDynamicAxesV18(
             operation_type=node.operation_type,
             keepdims=keepdims,
             noop_with_empty_axes=noop_with_empty_axes,
+            baked_axes=None,
         ),
-        onnx_mapping=onnx_mapping_from_node(node=node),
+        onnx_mapping=onnx_mapping_from_node(node),
     )
-
 
 @add_converter(operation_type='ReduceSum', version=13)
 def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:
