@@ -111,6 +111,7 @@ class OnnxPadDynamic(nn.Module, OnnxToTorchModule):  # pylint: disable=missing-c
 
         return F.pad(input_tensor, mode=self.mode, pad=torch_pads, value=constant_value)  # pylint: disable=not-callable
 
+
 class OnnxPadDynamicV18(nn.Module, OnnxToTorchModule):  # pylint: disable=missing-class-docstring
     def __init__(self, mode: str = 'constant'):
         super().__init__()
@@ -123,31 +124,59 @@ class OnnxPadDynamicV18(nn.Module, OnnxToTorchModule):  # pylint: disable=missin
         constant_value: Optional[float] = 0.0,
         axes: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        input_rank = input_tensor.dim()
+        x = input_tensor
+        rank = x.dim()
 
-        # Determine target axes
         if axes is None:
-            axes_list = list(range(input_rank))
+            axes_list = list(range(rank))
         else:
             axes_list = axes.tolist()
-            axes_list = [(axis + input_rank) if axis < 0 else axis for axis in axes_list]
+            axes_list = [(a + rank) if a < 0 else a for a in axes_list]
 
-        # Validate pads
         pads_list = pads.tolist()
         assert len(pads_list) == 2 * len(axes_list), \
             f"Expected {2 * len(axes_list)} pad values, but got {len(pads_list)}"
 
-        # Initialize full pad list with zeros
-        full_pad = [0, 0] * input_rank  # Format: [pad_right, pad_left, ..., for each dim in reverse]
+        k = len(axes_list)
+        if self.mode in ('reflect', 'replicate') and k > 3:
+            raise NotImplementedError(
+                f"{self.mode} padding supports at most 3 spatial dims in PyTorch, got {k}"
+            )
 
-        # Fill in pad values for the given axes
-        for i, axis in enumerate(axes_list):
-            pad_before = pads_list[i]
-            pad_after = pads_list[len(axes_list) + i]
-            full_pad[2 * (input_rank - 1 - axis)] = pad_before
-            full_pad[2 * (input_rank - 1 - axis) + 1] = pad_after
+        axes_set = set(axes_list)
+        head_axes = [i for i in range(rank) if i not in axes_set]   # untouched dims (will remain leading)
+        tail_axes = axes_list[:]                                     # padded dims (will move to the end in this order)
+        perm = head_axes + tail_axes
+        inv_perm = [0] * rank
+        for i, p in enumerate(perm):
+            inv_perm[p] = i
 
-        return F.pad(input_tensor, full_pad, mode=self.mode, value=constant_value)
+        x = x.permute(perm)  # [head..., tail...]
+
+        added = 0
+        if self.mode in ('reflect', 'replicate'):
+            needed_rank = 2 + k  # N,C + k spatial
+            while x.dim() < needed_rank:
+                x = x.unsqueeze(0)
+                added += 1
+
+        before = pads_list[:k]
+        after  = pads_list[k:]
+        torch_pad = []
+        for i in reversed(range(k)):  # from last spatial dim to first
+            torch_pad.extend([before[i], after[i]])
+
+        if self.mode == 'constant':
+            y = F.pad(x, pad=torch_pad, mode='constant', value=0.0 if constant_value is None else float(constant_value))
+        else:
+            y = F.pad(x, pad=torch_pad, mode=self.mode)
+
+        for _ in range(added):
+            y = y.squeeze(0)
+
+        y = y.permute(inv_perm)
+
+        return y
 
 
 @add_converter(operation_type='Pad', version=18)

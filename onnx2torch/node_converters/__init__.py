@@ -29,6 +29,7 @@ from onnx2torch.node_converters.isnan import *
 from onnx2torch.node_converters.layer_norm import *
 from onnx2torch.node_converters.logical import *
 from onnx2torch.node_converters.lrn import *
+from onnx2torch.node_converters.lstm import *
 from onnx2torch.node_converters.matmul import *
 from onnx2torch.node_converters.max_pool import *
 from onnx2torch.node_converters.mean import *
@@ -54,6 +55,7 @@ from onnx2torch.node_converters.scatter_nd import *
 from onnx2torch.node_converters.shape import *
 from onnx2torch.node_converters.slice import *
 from onnx2torch.node_converters.split import *
+from onnx2torch.node_converters.stft import *
 from onnx2torch.node_converters.squeeze import *
 from onnx2torch.node_converters.sum import *
 from onnx2torch.node_converters.tile import *
