@@ -56,6 +56,10 @@ class OnnxShape(nn.Module, OnnxToTorchModuleWithCustomExport):  # pylint: disabl
 @add_converter(operation_type='Shape', version=1)
 @add_converter(operation_type='Shape', version=13)
 @add_converter(operation_type='Shape', version=15)
+@add_converter(operation_type='Shape', version=19)
+@add_converter(operation_type='Shape', version=21)
+@add_converter(operation_type='Shape', version=23)
+@add_converter(operation_type='Shape', version=24)
 def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: disable=unused-argument
     return OperationConverterResult(
         torch_module=OnnxShape(
