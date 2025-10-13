@@ -112,6 +112,89 @@ class OnnxPadDynamic(nn.Module, OnnxToTorchModule):  # pylint: disable=missing-c
         return F.pad(input_tensor, mode=self.mode, pad=torch_pads, value=constant_value)  # pylint: disable=not-callable
 
 
+class OnnxPadDynamicV18(nn.Module, OnnxToTorchModule):  # pylint: disable=missing-class-docstring
+    def __init__(self, mode: str = 'constant'):
+        super().__init__()
+        self.mode = mode
+
+    def forward(
+        self,
+        input_tensor: torch.Tensor,
+        pads: torch.Tensor,
+        constant_value: Optional[float] = 0.0,
+        axes: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        x = input_tensor
+        rank = x.dim()
+
+        if axes is None:
+            axes_list = list(range(rank))
+        else:
+            axes_list = axes.tolist()
+            axes_list = [(a + rank) if a < 0 else a for a in axes_list]
+
+        pads_list = pads.tolist()
+        assert len(pads_list) == 2 * len(axes_list), \
+            f"Expected {2 * len(axes_list)} pad values, but got {len(pads_list)}"
+
+        k = len(axes_list)
+        if self.mode in ('reflect', 'replicate') and k > 3:
+            raise NotImplementedError(
+                f"{self.mode} padding supports at most 3 spatial dims in PyTorch, got {k}"
+            )
+
+        axes_set = set(axes_list)
+        head_axes = [i for i in range(rank) if i not in axes_set]   # untouched dims (will remain leading)
+        tail_axes = axes_list[:]                                     # padded dims (will move to the end in this order)
+        perm = head_axes + tail_axes
+        inv_perm = [0] * rank
+        for i, p in enumerate(perm):
+            inv_perm[p] = i
+
+        x = x.permute(perm)  # [head..., tail...]
+
+        added = 0
+        if self.mode in ('reflect', 'replicate'):
+            needed_rank = 2 + k  # N,C + k spatial
+            while x.dim() < needed_rank:
+                x = x.unsqueeze(0)
+                added += 1
+
+        before = pads_list[:k]
+        after  = pads_list[k:]
+        torch_pad = []
+        for i in reversed(range(k)):  # from last spatial dim to first
+            torch_pad.extend([before[i], after[i]])
+
+        if self.mode == 'constant':
+            y = F.pad(x, pad=torch_pad, mode='constant', value=0.0 if constant_value is None else float(constant_value))
+        else:
+            y = F.pad(x, pad=torch_pad, mode=self.mode)
+
+        for _ in range(added):
+            y = y.squeeze(0)
+
+        y = y.permute(inv_perm)
+
+        return y
+
+
+@add_converter(operation_type='Pad', version=18)
+@add_converter(operation_type='Pad', version=19)
+@add_converter(operation_type='Pad', version=23)
+@add_converter(operation_type='Pad', version=24)
+def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: disable=unused-argument
+    mode = node.attributes.get('mode', 'constant')
+    mode = _onnx_to_torch_mode(mode)
+
+    return OperationConverterResult(
+        torch_module=OnnxPadDynamicV18(mode=mode),
+        onnx_mapping=OnnxMapping(
+            inputs=node.input_values,
+            outputs=node.output_values,
+        ),
+    )
+
 @add_converter(operation_type='Pad', version=11)
 @add_converter(operation_type='Pad', version=13)
 def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: disable=unused-argument
