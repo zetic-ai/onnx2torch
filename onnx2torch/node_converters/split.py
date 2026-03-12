@@ -105,7 +105,6 @@ def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: 
 
 
 @add_converter(operation_type='Split', version=13)
-@add_converter(operation_type='Split', version=18)
 def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: disable=unused-argument
     axis = node.attributes.get('axis', 0)
     num_splits = node.attributes.get('num_outputs', None) or len(node.output_values)
