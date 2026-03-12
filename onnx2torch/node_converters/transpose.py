@@ -30,6 +30,10 @@ class OnnxTranspose(nn.Module, OnnxToTorchModule):  # pylint: disable=missing-cl
 
 @add_converter(operation_type='Transpose', version=1)
 @add_converter(operation_type='Transpose', version=13)
+@add_converter(operation_type='Transpose', version=21)
+@add_converter(operation_type='Transpose', version=23)
+@add_converter(operation_type='Transpose', version=24)
+@add_converter(operation_type='Transpose', version=25)
 def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: disable=unused-argument
     input_values = [node.input_values[0]]
     perm_value_name = node.input_values[1] if len(node.input_values) > 1 else None

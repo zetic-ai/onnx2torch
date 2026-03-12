@@ -43,6 +43,7 @@ class OnnxReshape(nn.Module, OnnxToTorchModuleWithCustomExport):  # pylint: disa
 @add_converter(operation_type='Reshape', version=21)
 @add_converter(operation_type='Reshape', version=23)
 @add_converter(operation_type='Reshape', version=24)
+@add_converter(operation_type='Reshape', version=25)
 def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: disable=unused-argument
     if node.attributes.get('allowzero', 0) == 1:
         raise NotImplementedError('"allowzero=1" is not implemented')
