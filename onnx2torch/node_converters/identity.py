@@ -14,6 +14,11 @@ class OnnxCopyIdentity(nn.Module, OnnxToTorchModule):  # pylint: disable=missing
         return x.clone()
 
 
+@add_converter(operation_type='Identity', version=25)
+@add_converter(operation_type='Identity', version=24)
+@add_converter(operation_type='Identity', version=23)
+@add_converter(operation_type='Identity', version=21)
+@add_converter(operation_type='Identity', version=19)
 @add_converter(operation_type='Identity', version=16)
 @add_converter(operation_type='Identity', version=14)
 @add_converter(operation_type='Identity', version=13)
