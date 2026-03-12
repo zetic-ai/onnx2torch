@@ -20,6 +20,7 @@ _AVGPOOL_CLASS_FROM_SPATIAL_RANK = {
 @add_converter(operation_type='AveragePool', version=7)
 @add_converter(operation_type='AveragePool', version=10)
 @add_converter(operation_type='AveragePool', version=11)
+@add_converter(operation_type='AveragePool', version=19)
 def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:
     input_value_info = graph.value_info[node.input_values[0]]
     input_shape = get_shape_from_value_info(input_value_info)

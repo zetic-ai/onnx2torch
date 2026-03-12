@@ -19,8 +19,10 @@ from onnx2torch.node_converters.eye_like import *
 from onnx2torch.node_converters.flatten import *
 from onnx2torch.node_converters.functions import *
 from onnx2torch.node_converters.gather import *
+from onnx2torch.node_converters.gelu import *
 from onnx2torch.node_converters.gemm import *
 from onnx2torch.node_converters.global_average_pool import *
+from onnx2torch.node_converters.grid_sample import *
 from onnx2torch.node_converters.identity import *
 from onnx2torch.node_converters.instance_norm import *
 from onnx2torch.node_converters.isinf import *
@@ -28,6 +30,7 @@ from onnx2torch.node_converters.isnan import *
 from onnx2torch.node_converters.layer_norm import *
 from onnx2torch.node_converters.logical import *
 from onnx2torch.node_converters.lrn import *
+from onnx2torch.node_converters.lstm import *
 from onnx2torch.node_converters.matmul import *
 from onnx2torch.node_converters.max_pool import *
 from onnx2torch.node_converters.mean import *
@@ -36,6 +39,7 @@ from onnx2torch.node_converters.mod import *
 from onnx2torch.node_converters.neg import *
 from onnx2torch.node_converters.nms import *
 from onnx2torch.node_converters.nonzero import *
+from onnx2torch.node_converters.one_hot import *
 from onnx2torch.node_converters.pad import *
 from onnx2torch.node_converters.pow import *
 from onnx2torch.node_converters.range import *
@@ -52,6 +56,7 @@ from onnx2torch.node_converters.scatter_nd import *
 from onnx2torch.node_converters.shape import *
 from onnx2torch.node_converters.slice import *
 from onnx2torch.node_converters.split import *
+from onnx2torch.node_converters.stft import *
 from onnx2torch.node_converters.squeeze import *
 from onnx2torch.node_converters.sum import *
 from onnx2torch.node_converters.tile import *
