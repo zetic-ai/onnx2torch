@@ -19,7 +19,12 @@ class OnnxIsNaN(nn.Module, OnnxToTorchModule):
         return torch.isnan(input_tensor)
 
 
+# version 9:  T1 in (float16, float, double)
+# version 13: T1 adds bfloat16
+# version 20: T1 adds float8e4m3fn, float8e4m3fnuz, float8e5m2, float8e5m2fnuz
+@add_converter(operation_type='IsNaN', version=9)
 @add_converter(operation_type='IsNaN', version=13)
+@add_converter(operation_type='IsNaN', version=20)
 def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:
     del graph
     torch_module = OnnxIsNaN()
