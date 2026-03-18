@@ -33,6 +33,7 @@ class OnnxCompare(nn.Module, OnnxToTorchModule):  # pylint: disable=missing-docs
 @add_converter(operation_type='Equal', version=7)
 @add_converter(operation_type='Equal', version=11)
 @add_converter(operation_type='Equal', version=13)
+@add_converter(operation_type='Equal', version=19)
 @add_converter(operation_type='Less', version=7)
 @add_converter(operation_type='Less', version=9)
 @add_converter(operation_type='Less', version=13)
@@ -41,6 +42,7 @@ class OnnxCompare(nn.Module, OnnxToTorchModule):  # pylint: disable=missing-docs
 @add_converter(operation_type='Greater', version=13)
 @add_converter(operation_type='LessOrEqual', version=12)
 @add_converter(operation_type='GreaterOrEqual', version=12)
+@add_converter(operation_type='GreaterOrEqual', version=16)
 def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: disable=unused-argument
     return OperationConverterResult(
         torch_module=OnnxCompare(operation_type=node.operation_type),
