@@ -36,15 +36,11 @@ class OnnxLSTM(nn.Module, OnnxToTorchModuleWithCustomExport):
         self.input_forget = input_forget
         self.layout = layout
 
-        num_directions = 2 if direction == 'bidirectional' else 1
-        self.lstm = nn.LSTM(
-            input_size=0,  # will be inferred at runtime
-            hidden_size=hidden_size,
-            num_layers=1,
-            bias=True,
-            batch_first=(layout == 1),
-            bidirectional=(direction == 'bidirectional')
-        )
+        # NOTE: nn.LSTM is intentionally NOT instantiated here. The ONNX weight
+        # tensors (W/R/B) are delivered as forward() inputs, and forward() runs
+        # the functional torch.lstm directly. Creating an nn.LSTM(input_size=0)
+        # placeholder both fails on newer PyTorch (input_size must be > 0) and
+        # would otherwise force an un-traceable runtime weight copy.
 
     def _onnx_attrs(self, opset_version: int) -> Dict[str, Any]:
         return {
@@ -67,71 +63,76 @@ class OnnxLSTM(nn.Module, OnnxToTorchModuleWithCustomExport):
         sequence_lens: Optional[torch.Tensor] = None,
         initial_h: Optional[torch.Tensor] = None,
         initial_c: Optional[torch.Tensor] = None,
-        P: Optional[torch.Tensor] = None
+        P: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
-        batch_first = (self.layout == 1)
+        batch_first = self.layout == 1
 
-        # If ONNX layout==0, transpose to batch-first for PyTorch
+        # Run the ONNX LSTM through the functional torch.lstm using the weight
+        # tensors directly. This avoids both:
+        #   1. re-instantiating nn.LSTM with a runtime-derived input_size
+        #      (a Tensor under tracing; also rejected by newer PyTorch), and
+        #   2. the in-place copy_/select/slice weight assignment, whose
+        #      tensor-assignment ops the coremltools TorchScript frontend
+        #      cannot lower ("No matching select or slice.").
         if not batch_first:
             # X: [S, B, I] -> [B, S, I]
             X = X.transpose(0, 1)
 
-        # After the (possible) transpose, batch is always dim 0
+        # After the (possible) transpose, batch is always dim 0.
         batch_size = X.size(0)
         num_directions = 2 if self.direction == 'bidirectional' else 1
-        input_size = X.size(-1)
+        bidirectional = self.direction == 'bidirectional'
+        H = self.hidden_size
 
-        # (Re)build LSTM with correct input_size
-        self.lstm = nn.LSTM(
-            input_size=input_size,
-            hidden_size=self.hidden_size,
-            num_layers=1,
-            bias=True,
-            batch_first=True,  # we've made X batch-first now
-            bidirectional=(self.direction == 'bidirectional'),
-        )
-
-        # Copy weights/biases from ONNX tensors
-        with torch.no_grad():
-            for d in range(num_directions):
-                suffix = '_reverse' if d == 1 else ''
-                getattr(self.lstm, f'weight_ih_l0{suffix}').copy_(W[d])
-                getattr(self.lstm, f'weight_hh_l0{suffix}').copy_(R[d])
-
-                if B is not None:
-                    bias_w = B[d, :4*self.hidden_size]
-                    bias_r = B[d, 4*self.hidden_size:]
-                    getattr(self.lstm, f'bias_ih_l0{suffix}').copy_(bias_w)
-                    getattr(self.lstm, f'bias_hh_l0{suffix}').copy_(bias_r)
-                else:
-                    getattr(self.lstm, f'bias_ih_l0{suffix}').zero_()
-                    getattr(self.lstm, f'bias_hh_l0{suffix}').zero_()
-
-        # Prepare h0/c0 with correct batch_size
         if initial_h is not None:
             h0 = initial_h
         else:
-            h0 = torch.zeros(num_directions, batch_size, self.hidden_size, device=X.device, dtype=X.dtype)
+            h0 = torch.zeros(num_directions, batch_size, H, device=X.device, dtype=X.dtype)
 
         if initial_c is not None:
             c0 = initial_c
         else:
-            c0 = torch.zeros(num_directions, batch_size, self.hidden_size, device=X.device, dtype=X.dtype)
+            c0 = torch.zeros(num_directions, batch_size, H, device=X.device, dtype=X.dtype)
 
-        # Run LSTM (X is batch-first)
-        Y, (Y_h, Y_c) = self.lstm(X, (h0, c0))
+        # ONNX packs the four gates as [input, output, forget, cell], whereas
+        # PyTorch expects [input, forget, cell, output]. Reorder the gate blocks
+        # (rows) of each weight/bias accordingly: [i, o, f, c] -> [i, f, c, o].
+        def _reorder_gates(t: torch.Tensor) -> torch.Tensor:
+            i, o, f, c = t.chunk(4, dim=0)
+            return torch.cat([i, f, c, o], dim=0)
 
-        # ONNX wants Y: [S, num_directions, B, H]
-        # PyTorch returned Y: [B, S, H*num_directions] (because batch_first=True)
-        Bsz, S, Hnd = Y.shape
-        H = self.hidden_size
+        params: List[torch.Tensor] = []
+        has_biases = B is not None
+        for d in range(num_directions):
+            params.append(_reorder_gates(W[d]))  # weight_ih
+            params.append(_reorder_gates(R[d]))  # weight_hh
+            if has_biases:
+                params.append(_reorder_gates(B[d, : 4 * H]))  # bias_ih
+                params.append(_reorder_gates(B[d, 4 * H :]))  # bias_hh
+
+        # Signature: torch.lstm(input, hx, params, has_biases, num_layers,
+        #            dropout, train, bidirectional, batch_first).
+        # X is already batch-first at this point.
+        Y, Y_h, Y_c = torch.lstm(
+            X,
+            (h0, c0),
+            params,
+            has_biases,
+            1,  # num_layers
+            0.0,  # dropout
+            False,  # train
+            bidirectional,
+            True,  # batch_first
+        )
+
+        # torch Y: [B, S, H*num_directions] -> ONNX Y: [S, num_directions, B, H]
+        Bsz, S, _ = Y.shape
         nd = num_directions
         Y = Y.view(Bsz, S, nd, H).transpose(0, 1)  # [S, B, nd, H]
-        Y = Y.transpose(1, 2)                      # [S, nd, B, H]
+        Y = Y.transpose(1, 2)  # [S, nd, B, H]
 
         return Y, Y_h, Y_c
-
 
 
 @add_converter(operation_type='LSTM', version=1)
