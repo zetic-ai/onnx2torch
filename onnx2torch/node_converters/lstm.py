@@ -3,7 +3,7 @@ __all__ = [
     'OnnxLSTM',
 ]
 
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Dict, List, Mapping, Optional, Tuple, cast
 import torch
 from torch import nn
 
@@ -135,6 +135,55 @@ class OnnxLSTM(nn.Module, OnnxToTorchModuleWithCustomExport):
         return Y, Y_h, Y_c
 
 
+# Default ONNX LSTM activations (per direction): f=Sigmoid, g=Tanh, h=Tanh.
+# These are exactly what the functional torch.lstm computes.
+_DEFAULT_ACTIVATIONS = ['Sigmoid', 'Tanh', 'Tanh']
+
+# ONNX LSTM optional-input positions (see the ONNX operator spec).
+_SEQUENCE_LENS_INPUT_INDEX = 4
+_PEEPHOLE_INPUT_INDEX = 7
+
+
+def _assert_supported(node: OnnxNode, attrs: Mapping[str, Any], num_directions: int) -> None:
+    """Reject ONNX LSTM features that this converter does not faithfully implement.
+
+    The converter lowers the ONNX LSTM onto the functional ``torch.lstm``, which
+    only covers the default configuration: ``forward``/``bidirectional`` directions,
+    the default Sigmoid/Tanh/Tanh activations, no gate clipping, no peephole
+    connections, no coupled input-forget gate, no per-sequence masking, and the
+    default ``layout=0``. Any other configuration would be silently miscomputed,
+    so we fail loudly here instead of producing a wrong model.
+    """
+    direction = attrs.get('direction', 'forward')
+    if direction not in ('forward', 'bidirectional'):
+        raise NotImplementedError(
+            f"ONNX LSTM direction={direction!r} is not supported (only 'forward' and 'bidirectional')."
+        )
+    if attrs.get('clip', None) is not None:
+        raise NotImplementedError("ONNX LSTM 'clip' attribute is not supported.")
+    if attrs.get('input_forget', 0):
+        raise NotImplementedError("ONNX LSTM 'input_forget' attribute is not supported.")
+    if attrs.get('layout', 0):
+        raise NotImplementedError("ONNX LSTM 'layout=1' is not supported (only the default layout=0).")
+    if attrs.get('activation_alpha', None) or attrs.get('activation_beta', None):
+        raise NotImplementedError("ONNX LSTM custom 'activation_alpha'/'activation_beta' is not supported.")
+
+    activations = attrs.get('activations', None)
+    if activations is not None:
+        expected = [a.lower() for a in _DEFAULT_ACTIVATIONS * num_directions]
+        if [a.lower() for a in activations] != expected:
+            raise NotImplementedError(
+                f"ONNX LSTM custom activations {list(activations)} are not supported "
+                "(only the default Sigmoid/Tanh/Tanh)."
+            )
+
+    inputs = node.input_values
+    if len(inputs) > _SEQUENCE_LENS_INPUT_INDEX and inputs[_SEQUENCE_LENS_INPUT_INDEX]:
+        raise NotImplementedError("ONNX LSTM 'sequence_lens' input is not supported.")
+    if len(inputs) > _PEEPHOLE_INPUT_INDEX and inputs[_PEEPHOLE_INPUT_INDEX]:
+        raise NotImplementedError("ONNX LSTM peephole 'P' input is not supported.")
+
+
 @add_converter(operation_type='LSTM', version=1)
 @add_converter(operation_type='LSTM', version=7)
 @add_converter(operation_type='LSTM', version=14)
@@ -149,6 +198,9 @@ def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:
     clip = attrs.get('clip', None)
     input_forget = attrs.get('input_forget', 0)
     layout = attrs.get('layout', 0)
+
+    num_directions = 2 if direction == 'bidirectional' else 1
+    _assert_supported(node, attrs, num_directions)
 
     return OperationConverterResult(
         torch_module=OnnxLSTM(
