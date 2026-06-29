@@ -82,13 +82,11 @@ def test_lstm(direction: str, with_bias: bool) -> None:  # pylint: disable=missi
         hidden=4,
         with_bias=with_bias,
     )
-    # Guards the ONNX [i, o, f, c] -> PyTorch [i, f, c, o] gate reordering:
-    # a missing/incorrect permutation makes outputs diverge well above atol.
+    # Guards the gate reordering: a wrong permutation diverges well above atol.
     check_onnx_model(model, test_inputs, atol_onnx_torch=1e-4)
 
 
-# Each entry: (label, kwargs for _make_lstm_model) for a config the converter
-# intentionally rejects rather than silently miscomputing.
+# Configs the converter rejects rather than silently miscomputing.
 _UNSUPPORTED_CASES = [
     ('direction_reverse', dict(direction='reverse')),
     ('clip', dict(extra_attrs={'clip': 1.0})),

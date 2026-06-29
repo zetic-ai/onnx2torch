@@ -36,11 +36,8 @@ class OnnxLSTM(nn.Module, OnnxToTorchModuleWithCustomExport):
         self.input_forget = input_forget
         self.layout = layout
 
-        # NOTE: nn.LSTM is intentionally NOT instantiated here. The ONNX weight
-        # tensors (W/R/B) are delivered as forward() inputs, and forward() runs
-        # the functional torch.lstm directly. Creating an nn.LSTM(input_size=0)
-        # placeholder both fails on newer PyTorch (input_size must be > 0) and
-        # would otherwise force an un-traceable runtime weight copy.
+        # No nn.LSTM instance: W/R/B arrive as forward() inputs and are run
+        # through the functional torch.lstm.
 
     def _onnx_attrs(self, opset_version: int) -> Dict[str, Any]:
         return {
@@ -68,18 +65,9 @@ class OnnxLSTM(nn.Module, OnnxToTorchModuleWithCustomExport):
 
         batch_first = self.layout == 1
 
-        # Run the ONNX LSTM through the functional torch.lstm using the weight
-        # tensors directly. This avoids both:
-        #   1. re-instantiating nn.LSTM with a runtime-derived input_size
-        #      (a Tensor under tracing; also rejected by newer PyTorch), and
-        #   2. the in-place copy_/select/slice weight assignment, whose
-        #      tensor-assignment ops the coremltools TorchScript frontend
-        #      cannot lower ("No matching select or slice.").
         if not batch_first:
-            # X: [S, B, I] -> [B, S, I]
-            X = X.transpose(0, 1)
+            X = X.transpose(0, 1)  # [S, B, I] -> [B, S, I]
 
-        # After the (possible) transpose, batch is always dim 0.
         batch_size = X.size(0)
         num_directions = 2 if self.direction == 'bidirectional' else 1
         bidirectional = self.direction == 'bidirectional'
@@ -95,9 +83,7 @@ class OnnxLSTM(nn.Module, OnnxToTorchModuleWithCustomExport):
         else:
             c0 = torch.zeros(num_directions, batch_size, H, device=X.device, dtype=X.dtype)
 
-        # ONNX packs the four gates as [input, output, forget, cell], whereas
-        # PyTorch expects [input, forget, cell, output]. Reorder the gate blocks
-        # (rows) of each weight/bias accordingly: [i, o, f, c] -> [i, f, c, o].
+        # ONNX packs gates as [i, o, f, c]; PyTorch expects [i, f, c(g), o].
         def _reorder_gates(t: torch.Tensor) -> torch.Tensor:
             i, o, f, c = t.chunk(4, dim=0)
             return torch.cat([i, f, c, o], dim=0)
@@ -111,9 +97,6 @@ class OnnxLSTM(nn.Module, OnnxToTorchModuleWithCustomExport):
                 params.append(_reorder_gates(B[d, : 4 * H]))  # bias_ih
                 params.append(_reorder_gates(B[d, 4 * H :]))  # bias_hh
 
-        # Signature: torch.lstm(input, hx, params, has_biases, num_layers,
-        #            dropout, train, bidirectional, batch_first).
-        # X is already batch-first at this point.
         Y, Y_h, Y_c = torch.lstm(
             X,
             (h0, c0),
@@ -135,25 +118,16 @@ class OnnxLSTM(nn.Module, OnnxToTorchModuleWithCustomExport):
         return Y, Y_h, Y_c
 
 
-# Default ONNX LSTM activations (per direction): f=Sigmoid, g=Tanh, h=Tanh.
-# These are exactly what the functional torch.lstm computes.
+# The default ONNX activations, which is what torch.lstm computes.
 _DEFAULT_ACTIVATIONS = ['Sigmoid', 'Tanh', 'Tanh']
 
-# ONNX LSTM optional-input positions (see the ONNX operator spec).
+# ONNX LSTM optional-input positions (per the operator spec).
 _SEQUENCE_LENS_INPUT_INDEX = 4
 _PEEPHOLE_INPUT_INDEX = 7
 
 
 def _assert_supported(node: OnnxNode, attrs: Mapping[str, Any], num_directions: int) -> None:
-    """Reject ONNX LSTM features that this converter does not faithfully implement.
-
-    The converter lowers the ONNX LSTM onto the functional ``torch.lstm``, which
-    only covers the default configuration: ``forward``/``bidirectional`` directions,
-    the default Sigmoid/Tanh/Tanh activations, no gate clipping, no peephole
-    connections, no coupled input-forget gate, no per-sequence masking, and the
-    default ``layout=0``. Any other configuration would be silently miscomputed,
-    so we fail loudly here instead of producing a wrong model.
-    """
+    """Raise for ONNX LSTM features torch.lstm cannot represent (else they would be silently miscomputed)."""
     direction = attrs.get('direction', 'forward')
     if direction not in ('forward', 'bidirectional'):
         raise NotImplementedError(
