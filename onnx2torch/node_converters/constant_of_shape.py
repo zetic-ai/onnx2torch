@@ -40,6 +40,10 @@ class OnnxConstantOfShape(nn.Module, OnnxToTorchModule):  # pylint: disable=miss
 
 
 @add_converter(operation_type='ConstantOfShape', version=9)
+@add_converter(operation_type='ConstantOfShape', version=20)
+@add_converter(operation_type='ConstantOfShape', version=21)
+@add_converter(operation_type='ConstantOfShape', version=23)
+@add_converter(operation_type='ConstantOfShape', version=24)
 def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: disable=unused-argument
     node_attributes = node.attributes
 

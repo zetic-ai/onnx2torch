@@ -2,7 +2,7 @@ __all__ = [
     'OnnxClip',
 ]
 
-from typing import Optional
+from typing import Optional, Tuple
 
 import torch
 from torch import nn
@@ -18,7 +18,8 @@ from onnx2torch.utils.common import get_const_value
 from onnx2torch.utils.common import onnx_mapping_from_node
 
 
-class OnnxClip(nn.Module, OnnxToTorchModule):  # pylint: disable=missing-docstring
+class OnnxClip(nn.Module, OnnxToTorchModule):
+    """Static (constant) min/max version."""
     def __init__(
         self,
         min_val: Optional[Number] = None,
@@ -28,43 +29,83 @@ class OnnxClip(nn.Module, OnnxToTorchModule):  # pylint: disable=missing-docstri
         self.min_val = min_val
         self.max_val = max_val
 
-    def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:  # pylint: disable=missing-function-docstring
+    def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:
         return torch.clamp(input_tensor, self.min_val, self.max_val)
 
 
-def _create_torch_module(min_val: Optional[torch.Tensor], max_val: Optional[torch.Tensor]) -> nn.Module:
-    if min_val is None and max_val is None:
-        torch_module = nn.Identity()
-    elif min_val == 0 and max_val is None:
-        torch_module = nn.ReLU()
-    elif min_val == 0 and max_val == 6:
-        torch_module = nn.ReLU6()
-    else:
-        torch_module = OnnxClip(min_val=min_val, max_val=max_val)
+class OnnxClipDynamic(nn.Module, OnnxToTorchModule):
+    """Dynamic min/max version (min/max are tensors at runtime)."""
+    def forward(
+        self,
+        input_tensor: torch.Tensor,
+        min_tensor: Optional[torch.Tensor] = None,
+        max_tensor: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        y = input_tensor
+        if min_tensor is not None:
+            # Ensure dtype/broadcasting ok
+            y = torch.maximum(y, min_tensor.to(dtype=y.dtype))
+        if max_tensor is not None:
+            y = torch.minimum(y, max_tensor.to(dtype=y.dtype))
+        return y
 
-    return torch_module
+
+def _create_torch_module(min_val: Optional[Number], max_val: Optional[Number]) -> nn.Module:
+    if min_val is None and max_val is None:
+        return nn.Identity()
+    if min_val == 0 and max_val is None:
+        return nn.ReLU()
+    if min_val == 0 and max_val == 6:
+        return nn.ReLU6()
+    return OnnxClip(min_val=min_val, max_val=max_val)
+
+
+def _normalize_name(name: Optional[str]) -> Optional[str]:
+    # Treat empty string as "not provided" (opset 11+ optional inputs)
+    return name if name not in (None, '') else None
 
 
 @add_converter(operation_type='Clip', version=11)
 @add_converter(operation_type='Clip', version=12)
 @add_converter(operation_type='Clip', version=13)
 def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:
-    # Min and Max inputs are optional
-    min_name = node.input_values[1] if len(node.input_values) > 1 else None
-    max_name = node.input_values[2] if len(node.input_values) > 2 else None
+    # Optional inputs
+    min_name = _normalize_name(node.input_values[1] if len(node.input_values) > 1 else None)
+    max_name = _normalize_name(node.input_values[2] if len(node.input_values) > 2 else None)
 
-    try:
-        min_val = float(get_const_value(min_name, graph)) if min_name is not None else None
-        max_val = float(get_const_value(max_name, graph)) if max_name is not None else None
-    except KeyError as exc:
-        raise NotImplementedError('Dynamic value of min/max is not implemented') from exc
+    const_min: Optional[float] = None
+    const_max: Optional[float] = None
+    needs_dynamic = False
 
-    torch_module = _create_torch_module(min_val=min_val, max_val=max_val)
+    # Try to resolve constants; if not found, we’ll go dynamic.
+    if min_name is not None:
+        try:
+            const_min = float(get_const_value(min_name, graph))
+        except Exception:
+            needs_dynamic = True
+    if max_name is not None:
+        try:
+            const_max = float(get_const_value(max_name, graph))
+        except Exception:
+            needs_dynamic = True
+
+    if not needs_dynamic:
+        torch_module = _create_torch_module(min_val=const_min, max_val=const_max)
+        inputs: Tuple[str, ...] = (node.input_values[0],)
+    else:
+        # Build dynamic module and pass through any provided min/max tensors
+        torch_module = OnnxClipDynamic()
+        dyn_inputs = [node.input_values[0]]
+        if min_name is not None:
+            dyn_inputs.append(min_name)
+        if max_name is not None:
+            dyn_inputs.append(max_name)
+        inputs = tuple(dyn_inputs)
 
     return OperationConverterResult(
         torch_module=torch_module,
         onnx_mapping=OnnxMapping(
-            inputs=(node.input_values[0],),
+            inputs=inputs,
             outputs=node.output_values,
         ),
     )

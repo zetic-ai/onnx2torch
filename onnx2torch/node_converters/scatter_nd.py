@@ -27,11 +27,15 @@ class ReductionOnnxAttr(Enum):
     - `none`: no reduction applied.
     - `add`: reduction using the addition operation.
     - `mul`: reduction using the multiplication operation.
+    - `max`: 
+    - `min`: 
     """
 
     NONE = 'none'
     ADD = 'add'
     MUL = 'mul'
+    MAX = 'max'
+    MIN = 'min'
 
 
 class OnnxScatterND(nn.Module, OnnxToTorchModuleWithCustomExport):  # pylint: disable=missing-class-docstring
@@ -88,6 +92,7 @@ class OnnxScatterND(nn.Module, OnnxToTorchModuleWithCustomExport):  # pylint: di
 @add_converter(operation_type='ScatterND', version=11)
 @add_converter(operation_type='ScatterND', version=13)
 @add_converter(operation_type='ScatterND', version=16)
+@add_converter(operation_type='ScatterND', version=18)
 def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: disable=unused-argument
     node_attributes = node.attributes
     reduction = ReductionOnnxAttr(node_attributes.get('reduction', 'none'))
