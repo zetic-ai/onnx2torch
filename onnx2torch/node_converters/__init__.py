@@ -30,6 +30,7 @@ from onnx2torch.node_converters.isnan import *
 from onnx2torch.node_converters.layer_norm import *
 from onnx2torch.node_converters.logical import *
 from onnx2torch.node_converters.lrn import *
+from onnx2torch.node_converters.gru import *
 from onnx2torch.node_converters.lstm import *
 from onnx2torch.node_converters.matmul import *
 from onnx2torch.node_converters.max_pool import *
